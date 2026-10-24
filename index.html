@@ -1484,6 +1484,7 @@ function bindPointer() {
 
 /* ---------------- 尺寸 ---------------- */
 function resize() {
+  if (!hero.clientWidth || !hero.clientHeight) return;        // 被隐藏 / 尺寸为 0 时保持原布局
   const old = { s: V.s, ox: V.ox, oy: V.oy };
   layout();
   cvW.width = Math.round(V.W * V.gdpr); cvW.height = Math.round(V.H * V.gdpr);
@@ -1549,6 +1550,13 @@ async function init() {
   layout();
   const [pond, patch, mask, leaf, pad, rod] = await Promise.all([A.pond, A.patch, A.mask, A.leaf, A.pad, A.rod].map(load));
   Object.assign(SPR, { leaf, pad, rod });
+  // 页面在隐藏或尺寸为 0 的容器里打开时，等它有了尺寸再摆放鱼和浮漂（否则缩放为 0，坐标全变成 NaN）
+  await new Promise((res) => {
+    if (hero.clientWidth && hero.clientHeight) return res();
+    const ro = new ResizeObserver(() => { if (hero.clientWidth && hero.clientHeight) { ro.disconnect(); res(); } });
+    ro.observe(hero);
+  });
+  layout();
   const mc = document.createElement('canvas'); mc.width = maskW = mask.width; mc.height = maskH = mask.height;
   const mctx = mc.getContext('2d'); mctx.drawImage(mask, 0, 0); maskData = mctx.getImageData(0, 0, maskW, maskH).data;
   const bg = document.createElement('canvas'); bg.width = IMG.w; bg.height = IMG.h;
