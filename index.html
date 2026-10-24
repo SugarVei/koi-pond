@@ -4,6 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>锦池 · 可以触摸的池塘</title>
+<script>
+  // Opt in before the first paint; the standalone page keeps its original UI.
+  if (new URLSearchParams(location.search).get('embed') === '1') {
+    document.documentElement.classList.add('is-embed');
+  }
+</script>
 <style>
   :root {
     --ink: #0d2b30;
@@ -83,6 +89,8 @@
     -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
     box-shadow: inset 0 0 0 1px rgba(13,43,48,.14);
   }
+  .is-embed .nav, .is-embed .copy, .is-embed .veil { display: none; }
+  .is-embed .hero:focus-visible { outline: 2px solid rgba(255,255,255,.85); outline-offset: -4px; }
   @media (max-width: 760px) {
     .menu { display: none; }
     .brand small { display: none; }
@@ -182,6 +190,14 @@ const wrapA = (a) => ((a + Math.PI) % TAU + TAU) % TAU - Math.PI;
 const ease = (rate, dt) => 1 - Math.exp(-rate * dt);
 
 const hero = document.getElementById('hero');
+const embedded = document.documentElement.classList.contains('is-embed');
+let keyboardPoint = null;
+if (embedded) {
+  hero.tabIndex = 0;
+  hero.setAttribute('role', 'region');
+  hero.setAttribute('aria-label', '互动锦池：方向键划水，空格或回车投食。Interactive koi pond: arrow keys stir the water; Space or Enter feeds the fish.');
+  hero.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown ArrowLeft ArrowRight Space Enter');
+}
 const pondEl = document.getElementById('pond');
 const cvW = document.getElementById('water');
 const cvS = document.getElementById('surface');
@@ -1482,11 +1498,57 @@ function bindPointer() {
   hero.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') ptr.active = false; });
 }
 
+// Keyboard access is opt-in with embed=1 and uses the same water / feed physics.
+function bindEmbedKeyboard() {
+  if (!embedded) return;
+  const point = () => {
+    if (!keyboardPoint) {
+      keyboardPoint = maskAt(V.home[0], V.home[1], 1) >= 0.5 ? V.home.slice() : randomWaterPoint(30);
+    }
+    return keyboardPoint;
+  };
+  hero.addEventListener('keydown', (e) => {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const direction = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+    if (!direction && e.key !== ' ' && e.key !== 'Enter') return;
+    e.preventDefault();
+    const [x0, y0] = point(), t = performance.now() / 1000;
+    if (direction) {
+      const step = Math.max(12, Math.min(V.W, V.H) * 0.035);
+      const x = clamp(x0 + direction[0] * step, 12, V.W - 12);
+      const y = clamp(y0 + direction[1] * step, 12, V.H - 12);
+      if (maskAt(x, y, 1) >= 0.5) {
+        trail(x0, y0, x, y, t);
+        keyboardPoint = [x, y];
+        ptr.vx = direction[0] * 140; ptr.vy = direction[1] * 140; ptr.speed = 140;
+      }
+    } else if (!e.repeat) feed(x0, y0);
+    ptr.x = point()[0]; ptr.y = point()[1]; ptr.t = ptr.lastMove = t; ptr.active = true;
+  });
+  hero.addEventListener('blur', () => { keyboardPoint = null; ptr.active = false; });
+}
+function drawKeyboardPoint(ctx) {
+  if (!embedded || !keyboardPoint || document.activeElement !== hero || !hero.matches(':focus-visible')) return;
+  ctx.save();
+  ctx.beginPath(); ctx.arc(keyboardPoint[0], keyboardPoint[1], 10, 0, TAU);
+  ctx.strokeStyle = 'rgba(13,43,48,.75)'; ctx.lineWidth = 3; ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,.95)'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.restore();
+}
+function notifyEmbedReady() {
+  if (!embedded || parent === window || !document.referrer) return;
+  try {
+    const parentOrigin = new URL(document.referrer).origin;
+    if (parentOrigin !== 'null') parent.postMessage({ type: 'koi-pond:ready', version: 1 }, parentOrigin);
+  } catch (_) { /* A missing or opaque parent does not affect the pond. */ }
+}
+
 /* ---------------- 尺寸 ---------------- */
 function resize() {
   if (!hero.clientWidth || !hero.clientHeight) return;        // 被隐藏 / 尺寸为 0 时保持原布局
   const old = { s: V.s, ox: V.ox, oy: V.oy };
   layout();
+  keyboardPoint = null;
   cvW.width = Math.round(V.W * V.gdpr); cvW.height = Math.round(V.H * V.gdpr);
   cvS.width = Math.round(V.W * V.dpr); cvS.height = Math.round(V.H * V.dpr);
   cvH.width = Math.ceil(V.W / SHADOW_DOWN); cvH.height = Math.ceil(V.H / SHADOW_DOWN);
@@ -1531,6 +1593,7 @@ function frame(ms) {
   sctx.setTransform(1, 0, 0, 1, 0, 0); sctx.clearRect(0, 0, cvS.width, cvS.height);
   sctx.setTransform(V.dpr, 0, 0, V.dpr, 0, 0);
   drawFood(sctx);
+  if (embedded) drawKeyboardPoint(sctx);
   sctx.setTransform(V.dpr * V.s, 0, 0, V.dpr * V.s, V.dpr * V.ox, V.dpr * V.oy);
   for (const f of floaters) drawFloater(sctx, f, false);
   drawAngler(sctx);
@@ -1578,9 +1641,11 @@ async function init() {
   rodPose(); ROD.e = ROD.eT = 0.07; AN.firstWait = reduced ? Infinity : rand(CONFIG.firstReel[0], CONFIG.firstReel[1]);
   setState('wait'); FL.slack = 0.38; FL.slackSide = 1;
   bindPointer();
+  bindEmbedKeyboard();
   let rz = 0;
   window.addEventListener('resize', () => { if (!rz) rz = requestAnimationFrame(() => { rz = 0; resize(); }); });
   if (!document.hidden) start();
+  notifyEmbedReady();
 }
 window.addEventListener('DOMContentLoaded', init);
 })();
